@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mobigo2-homebrew-manager"
+version = "0.1.0"
+description = "Backup-first cross-platform homebrew manager for the VTech MobiGo 2"
+requires-python = ">=3.10"
+dependencies = ["tkinterdnd2>=0.4.3"]
+
+[project.optional-dependencies]
+windows = ["pywin32>=306"]
+build = ["pyinstaller>=6.10"]
+
+[project.scripts]
+mobigo2-homebrew-manager = "mobigo_homebrew_manager.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["mobigo_homebrew_manager*"]

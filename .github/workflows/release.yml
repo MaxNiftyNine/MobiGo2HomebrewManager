@@ -1,0 +1,48 @@
+name: Package release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  package:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            asset: MobiGo2HomebrewManager-macOS.zip
+          - os: windows-latest
+            asset: MobiGo2HomebrewManager-Windows.zip
+          - os: ubuntu-latest
+            asset: MobiGo2HomebrewManager-Linux-x86_64.tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Tk on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y python3-tk libxcursor1
+      - run: python -m pip install -r requirements-build.txt
+      - run: python -m unittest discover -s tests -v
+      - run: python scripts/build.py
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent dist/MobiGo2HomebrewManager.app "${{ matrix.asset }}"
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/MobiGo2HomebrewManager.exe,README.md,LICENSE -DestinationPath "${{ matrix.asset }}"
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        run: tar -czf "${{ matrix.asset }}" -C dist MobiGo2HomebrewManager -C .. README.md LICENSE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: ${{ matrix.asset }}
