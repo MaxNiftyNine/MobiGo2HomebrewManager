@@ -4,6 +4,13 @@ A cross-platform desktop manager for `.MBA` homebrew on the VTech MobiGo 2.
 It keeps the original `.MBA` filenames, rebuilds the launcher's `INDEX.HB`
 catalog, and offers a guarded full-file-tree view for advanced work.
 
+> **Hardware preview:** listing and replacement of existing files use the
+> verified firmware mailbox, but publishing a brand-new directory entry is not
+> yet established on retail hardware. If `/HB` does not already exist, this
+> release stops after making the local SY backup and before changing SY. It
+> never treats a successful command status as proof that `/HB` exists; the
+> directory must be rediscovered first.
+
 The first-run installer is deliberately backup-first:
 
 1. discover the regional `/BUNDLE/SY/*SY.MBA` name;
