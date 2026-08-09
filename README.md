@@ -76,8 +76,8 @@ restoration fails, it rolls the active launcher back and leaves `/HB` intact.
 
 ## Physical-hardware evidence
 
-On 2026-08-08 the Manager was tested against a US MobiGo 2 with system entry
-`/BUNDLE/SY/135800SY.MBA`. Retail firmware behavior established by that test:
+On 2026-08-08 the Manager was tested against a US MobiGo 2 using dynamically
+discovered regional SY storage. Retail firmware behavior established by that test:
 
 - a missing path may return successful `stat` status with size zero, so the
   Manager proves existence through path type plus the parent directory listing;
