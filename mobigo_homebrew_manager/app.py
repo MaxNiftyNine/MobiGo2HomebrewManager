@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
+import os
+import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -14,12 +16,14 @@ except ImportError:  # Browse remains available in source-only environments.
     TkinterDnD = None
 
 from .device import DeviceSession
+from .elevation import invoking_user_home
 from .resources import launcher_bytes
 from .service import (
     DMODE_PATH,
     HB_DIRECTORY,
     ManagerError,
     RemoteEntry,
+    SYSTEM_BACKUP_NAME,
     add_homebrew,
     delete_homebrew,
     discover_system_path,
@@ -27,6 +31,7 @@ from .service import (
     list_homebrew,
     rename_file,
     set_developer_mode,
+    uninstall_homebrew,
 )
 
 
@@ -41,10 +46,12 @@ class HomebrewManager(RootClass):
         self.minsize(720, 500)
         self.configure(bg="#dff6ff")
         self.busy = False
+        self._busy_widget_states: list[tuple[ttk.Widget, bool]] = []
         self.first_refresh = True
         self._style()
         self._header()
         self._body()
+        self._loading_screen()
         self._status("Plug in your MobiGo 2 in USB mode, then choose Refresh.")
         self.after(250, self.refresh)
 
@@ -103,6 +110,79 @@ class HomebrewManager(RootClass):
         self.status = ttk.Label(self, anchor="w", padding=(12, 8))
         self.status.pack(fill="x")
 
+    def _loading_screen(self) -> None:
+        self.loading_overlay = tk.Frame(
+            self, bg="#cbd3d9", highlightbackground="#9aa8b2", highlightthickness=1
+        )
+        card = tk.Frame(
+            self.loading_overlay, bg="#eef2f4", padx=42, pady=32,
+            highlightbackground="#aab6bf", highlightthickness=1,
+        )
+        card.place(relx=0.5, rely=0.5, anchor="center")
+        tk.Label(
+            card, text="MobiGo 2 Homebrew Manager", bg="#eef2f4",
+            fg="#51606b", font=("Arial", 16, "bold"),
+        ).pack(pady=(0, 14))
+        self.loading_label = tk.Label(
+            card, text="Working…", bg="#eef2f4", fg="#263944",
+            font=("Arial", 11), wraplength=440, justify="center",
+        )
+        self.loading_label.pack(pady=(0, 18))
+        self.loading_progress = ttk.Progressbar(card, mode="indeterminate", length=330)
+        self.loading_progress.pack()
+        tk.Label(
+            card, text="Do not unplug or power off the MobiGo during a transfer.",
+            bg="#eef2f4", fg="#65747e", font=("Arial", 9),
+        ).pack(pady=(16, 0))
+        self.loading_overlay.bind("<Button>", lambda _event: "break")
+        self.loading_overlay.place_forget()
+
+    @staticmethod
+    def _children(widget):
+        for child in widget.winfo_children():
+            yield child
+            yield from HomebrewManager._children(child)
+
+    def _show_loading(self, label: str) -> None:
+        self.loading_label.configure(text=label)
+        self._busy_widget_states = []
+        interactive = (
+            ttk.Button, ttk.Checkbutton, ttk.Radiobutton, ttk.Combobox,
+            ttk.Entry, ttk.Notebook, ttk.Treeview,
+        )
+        for widget in self._children(self):
+            if isinstance(widget, interactive):
+                state = widget.state()
+                was_disabled = "disabled" in state
+                self._busy_widget_states.append((widget, was_disabled))
+                widget.state(["disabled"])
+        self.configure(cursor="watch")
+        self.loading_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.loading_overlay.lift()
+        self.loading_progress.start(12)
+        self.loading_overlay.focus_set()
+        try:
+            self.loading_overlay.grab_set()
+        except tk.TclError:
+            pass
+
+    def _hide_loading(self) -> None:
+        self.loading_progress.stop()
+        try:
+            if self.grab_current() == self.loading_overlay:
+                self.loading_overlay.grab_release()
+        except tk.TclError:
+            pass
+        self.loading_overlay.place_forget()
+        self.configure(cursor="")
+        for widget, was_disabled in self._busy_widget_states:
+            try:
+                if not was_disabled and widget.winfo_exists():
+                    widget.state(["!disabled"])
+            except tk.TclError:
+                pass
+        self._busy_widget_states = []
+
     def _home_tab(self) -> None:
         self.apps = ttk.Treeview(
             self.home_tab, columns=("name", "size"), show="headings", selectmode="browse"
@@ -116,6 +196,10 @@ class HomebrewManager(RootClass):
         buttons.pack(fill="x")
         ttk.Button(buttons, text="Add .MBA…", command=self.choose_add).pack(side="left")
         ttk.Button(buttons, text="Delete", command=self.delete_selected).pack(side="left", padx=7)
+        ttk.Button(
+            buttons, text="Delete all homebrew and exit",
+            command=self.delete_all_and_exit,
+        ).pack(side="left", padx=7)
         ttk.Label(
             buttons,
             text="Drop .MBA files here" if DND_FILES else "Drag/drop available in packaged builds",
@@ -149,7 +233,10 @@ class HomebrewManager(RootClass):
         self.tree.pack(fill="both", expand=True)
         ttk.Label(
             self.advanced_tab,
-            text="Advanced changes can make the console unbootable. SY and its recovery copy are protected by default.",
+            text=(
+                "Advanced changes can make the console unbootable. SY is directly editable; "
+                f"/HB/{SYSTEM_BACKUP_NAME} is deleted only by the full uninstall."
+            ),
         ).pack(fill="x", pady=(8, 0))
 
     def _status(self, text: str) -> None:
@@ -160,7 +247,7 @@ class HomebrewManager(RootClass):
             return
         self.busy = True
         self._status(label)
-        self.refresh_button.configure(state="disabled")
+        self._show_loading(label)
 
         def thread() -> None:
             try:
@@ -176,15 +263,19 @@ class HomebrewManager(RootClass):
 
     def _finish_error(self, error: Exception) -> None:
         self.busy = False
-        self.refresh_button.configure(state="normal")
+        self._hide_loading()
         self.device_label.configure(text="Not connected")
         self._status(str(error))
+        print(f"MobiGo Manager: {error}", file=sys.stderr, flush=True)
+        if os.environ.get("MOBIGO_MANAGER_EXIT_AFTER_REFRESH") == "1":
+            self.after(0, self.destroy)
+            return
         if not self.first_refresh:
             messagebox.showerror("MobiGo 2 Homebrew Manager", str(error), parent=self)
 
     def _finish(self, result, complete) -> None:
         self.busy = False
-        self.refresh_button.configure(state="normal")
+        self._hide_loading()
         if complete:
             complete(result)
 
@@ -223,13 +314,21 @@ class HomebrewManager(RootClass):
             self.dmode.set(dmode)
             self.device_label.configure(text="MobiGo 2 connected")
             self._status(f"Ready — {len(apps)} homebrew .MBA file(s)")
+            print(
+                f"MobiGo Manager: connected, {len(apps)} homebrew app(s), "
+                f"launcher={'installed' if installed else 'not installed'}",
+                flush=True,
+            )
             prompt = self.first_refresh and not installed
             self.first_refresh = False
+            if os.environ.get("MOBIGO_MANAGER_EXIT_AFTER_REFRESH") == "1":
+                self.after(0, self.destroy)
+                return
             if prompt and messagebox.askyesno(
                 "Install Homebrew Launcher?",
                 "The system menu is not HomebrewLauncher.MBA.\n\n"
                 "Install it now? The Manager will first download SY, save a local backup, "
-                "copy it to /HB/SystemMenu.MBA, verify both backups, and only then replace SY.",
+                f"copy it to /HB/{SYSTEM_BACKUP_NAME}, verify both backups, and only then replace SY.",
                 parent=self,
             ):
                 self.install()
@@ -245,7 +344,7 @@ class HomebrewManager(RootClass):
         return f"{value / (1024 * 1024):.1f} MiB"
 
     def install(self) -> None:
-        backups = Path.home() / "Documents" / "MobiGo 2 Backups"
+        backups = invoking_user_home() / "Documents" / "MobiGo 2 Backups"
         def worker():
             with DeviceSession() as fs:
                 return install_launcher(fs, launcher_bytes(), backups)
@@ -291,6 +390,14 @@ class HomebrewManager(RootClass):
         name = self._selected_name()
         if not name:
             return
+        if name.casefold() == SYSTEM_BACKUP_NAME.casefold():
+            messagebox.showinfo(
+                "System menu recovery copy",
+                f"{SYSTEM_BACKUP_NAME} is removed only by 'Delete all homebrew and exit', "
+                "which restores it to SY first.",
+                parent=self,
+            )
+            return
         if not messagebox.askyesno("Delete homebrew?", f"Delete /HB/{name}?", parent=self):
             return
         def worker():
@@ -298,13 +405,47 @@ class HomebrewManager(RootClass):
                 delete_homebrew(fs, name)
         self._job(f"Deleting {name}…", worker, lambda _: self.refresh())
 
+    def delete_all_and_exit(self) -> None:
+        if not messagebox.askyesno(
+            "Restore system menu and remove homebrew?",
+            f"This will restore /HB/{SYSTEM_BACKUP_NAME} to the active SY slot, "
+            "verify it, delete the entire /HB folder, and close the Manager.\n\n"
+            "Continue?",
+            parent=self,
+        ):
+            return
+        backups = invoking_user_home() / "Documents" / "MobiGo 2 Backups"
+        def worker():
+            with DeviceSession() as fs:
+                return uninstall_homebrew(fs, backups)
+        def complete(result) -> None:
+            messagebox.showinfo(
+                "Homebrew removed",
+                "The original system menu was restored and verified, and /HB was "
+                f"removed.\n\nRecovery backup:\n{result.local_backup}",
+                parent=self,
+            )
+            self.destroy()
+        self._job("Restoring the original system menu and removing /HB…", worker, complete)
+
     def toggle_dmode(self) -> None:
         enabled = self.dmode.get()
         def worker():
             with DeviceSession() as fs:
-                set_developer_mode(fs, enabled)
+                return set_developer_mode(fs, enabled)
+        def complete(reboot_required) -> None:
+            if reboot_required:
+                self._status("D-mode marker written — unplug USB and reboot the MobiGo 2")
+                messagebox.showinfo(
+                    "Reboot required",
+                    "D-mode was written. Unplug USB and reboot the MobiGo 2 before "
+                    "using the Manager again.",
+                    parent=self,
+                )
+            else:
+                self.refresh()
         self._job(f"{'Enabling' if enabled else 'Disabling'} developer mode…", worker,
-                  lambda _: self.refresh())
+                  complete)
 
     def _selected_path(self) -> str | None:
         selected = self.tree.selection()
@@ -337,9 +478,6 @@ class HomebrewManager(RootClass):
         )
         if not destination:
             return
-        if destination.upper().startswith("/BUNDLE/SY/"):
-            messagebox.showerror("Protected path", "Use the backup-first installer for SY.", parent=self)
-            return
         data = Path(local).read_bytes()
         def worker():
             with DeviceSession() as fs:
@@ -357,9 +495,6 @@ class HomebrewManager(RootClass):
         )
         if not destination or destination == source:
             return
-        if source.upper().startswith("/BUNDLE/SY/") or destination.upper().startswith("/BUNDLE/SY/"):
-            messagebox.showerror("Protected path", "SY cannot be renamed in Advanced mode.", parent=self)
-            return
         def worker():
             with DeviceSession() as fs:
                 rename_file(fs, source, destination)
@@ -369,9 +504,12 @@ class HomebrewManager(RootClass):
         path = self._selected_path()
         if not path:
             return
-        upper = path.upper()
-        if upper.startswith("/BUNDLE/SY/") or upper == "/HB/SYSTEMMENU.MBA":
-            messagebox.showerror("Protected path", "The boot menu and recovery copy are protected.", parent=self)
+        if path.upper() == ("/HB/" + SYSTEM_BACKUP_NAME).upper():
+            messagebox.showinfo(
+                "System menu recovery copy",
+                f"Use 'Delete all homebrew and exit' to remove {SYSTEM_BACKUP_NAME} safely.",
+                parent=self,
+            )
             return
         if not messagebox.askyesno("Advanced delete", f"Permanently delete {path}?", parent=self):
             return

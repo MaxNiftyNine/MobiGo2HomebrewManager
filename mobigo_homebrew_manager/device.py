@@ -218,8 +218,26 @@ class MobiGoFS:
         return 0 if status < 0 else status
 
     def stat_size(self, path: str) -> int | None:
+        normalized = path.replace("\\", "/").rstrip("/") or "/"
+        if normalized == "/":
+            return 0
+
+        # Retail MobiGo 2 firmware returns status 0 and size 0 for both an
+        # absent path and a directory.  A file is the only unambiguous result
+        # from command 0x10, so use its direct stat fast path and resolve every
+        # other case through the parent directory listing.
+        if self.path_type(normalized) != 1:
+            parent, _, name = normalized.rpartition("/")
+            parent = parent or "/"
+            match = next(
+                (entry for entry in self.listdir(parent)
+                 if entry.name.casefold() == name.casefold()),
+                None,
+            )
+            return None if match is None else match.size
+
         request = self._request(9)
-        self._path(request, path)
+        self._path(request, normalized)
         response = self._exchange(request)
         if self._status(response) < 0:
             return None
@@ -288,6 +306,10 @@ class MobiGoFS:
             raise MobiGoError("writing file data failed")
 
     def write_file(self, path: str, data: bytes) -> None:
+        if len(data) & 1:
+            raise MobiGoError(
+                f"MobiGo files must have an even byte length; {path} has {len(data)} bytes"
+            )
         handle = self.open(path, MODE_WRITE)
         try:
             self.seek(handle, 0)
@@ -308,6 +330,11 @@ class MobiGoFS:
         request = self._request(0x0A)
         self._path(request, path)
         self._simple(request, f"creating directory {path}")
+
+    def rmdir(self, path: str) -> None:
+        request = self._request(0x0B)
+        self._path(request, path)
+        self._simple(request, f"removing directory {path}")
 
     @staticmethod
     def _entries(page: bytes) -> Iterator[WireEntry]:
@@ -421,6 +448,13 @@ class MountedMobiGoFS:
                 raise MobiGoError(f"a file already occupies {path}")
         except OSError as error:
             raise MobiGoError(f"cannot create {path}: {error}") from error
+
+    def rmdir(self, path: str) -> None:
+        local = self._local(path)
+        try:
+            local.rmdir()
+        except OSError as error:
+            raise MobiGoError(f"cannot remove directory {path}: {error}") from error
 
 
 def _disk_info(device: str) -> dict:

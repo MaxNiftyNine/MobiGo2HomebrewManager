@@ -14,6 +14,7 @@ from mobigo_homebrew_manager.service import (
     install_launcher,
     rename_file,
     set_developer_mode,
+    uninstall_homebrew,
 )
 
 
@@ -70,6 +71,15 @@ class FakeFS:
         self.log.append(("mkdir", path))
         self.directories.add(path)
 
+    def rmdir(self, path):
+        self.log.append(("rmdir", path))
+        prefix = path.rstrip("/") + "/"
+        if any(item.startswith(prefix) for item in self.files):
+            raise OSError("directory still has files")
+        if any(item != path and item.startswith(prefix) for item in self.directories):
+            raise OSError("directory still has directories")
+        self.directories.remove(path)
+
     def stat_size(self, path):
         if path in self.files:
             return len(self.files[path])
@@ -86,17 +96,17 @@ class ServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             result = install_launcher(fs, launcher, Path(temporary))
             self.assertEqual(result.local_backup.read_bytes(), original)
-        self.assertEqual(fs.files["/HB/SystemMenu.MBA"], original)
+        self.assertEqual(fs.files["/HB/System.MBA"], original)
         self.assertEqual(fs.files["/BUNDLE/SY/135804SY.MBA"], launcher)
         catalog = decode(fs.files["/HB/INDEX.HB"])
-        self.assertEqual(catalog[0].label, "SystemMenu.MBA")
+        self.assertEqual(catalog[0].label, "System.MBA")
         system_write = fs.log.index(("write", "/BUNDLE/SY/135804SY.MBA"))
-        self.assertLess(fs.log.index(("read", "/HB/SystemMenu.MBA")), system_write)
+        self.assertLess(fs.log.index(("read", "/HB/System.MBA")), system_write)
         self.assertLess(fs.log.index(("read", "/HB/INDEX.HB")), system_write)
 
     def test_install_never_writes_system_when_remote_backup_fails(self):
         fs = FakeFS()
-        fs.corrupt_path = "/HB/SystemMenu.MBA"
+        fs.corrupt_path = "/HB/System.MBA"
         with tempfile.TemporaryDirectory() as temporary:
             with self.assertRaisesRegex(ManagerError, "backup verification"):
                 install_launcher(fs, mba("SY", 0x22), Path(temporary))
@@ -145,12 +155,47 @@ class ServiceTests(unittest.TestCase):
         set_developer_mode(fs, False)
         self.assertNotIn("/ETC/DMODE", fs.files)
 
-    def test_recovery_copy_is_protected(self):
+    def test_recovery_copy_requires_full_uninstall(self):
         fs = FakeFS()
         fs.mkdir("/HB")
-        fs.files["/HB/SystemMenu.MBA"] = mba("SY", 0x11)
-        with self.assertRaisesRegex(ManagerError, "protected"):
-            delete_homebrew(fs, "SystemMenu.MBA")
+        fs.files["/HB/System.MBA"] = mba("SY", 0x11)
+        with self.assertRaisesRegex(ManagerError, "Delete all homebrew and exit"):
+            delete_homebrew(fs, "System.MBA")
+
+    def test_uninstall_restores_system_then_removes_hb_tree(self):
+        fs = FakeFS()
+        original = fs.files["/BUNDLE/SY/135804SY.MBA"]
+        launcher = mba("SY", 0x22)
+        fs.files["/BUNDLE/SY/135804SY.MBA"] = launcher
+        fs.mkdir("/HB")
+        fs.mkdir("/HB/SUB")
+        fs.files["/HB/System.MBA"] = original
+        fs.files["/HB/Pong.MBA"] = mba("G1", 0x33)
+        fs.files["/HB/SUB/NOTE.DAT"] = b"safe"
+        with tempfile.TemporaryDirectory() as temporary:
+            result = uninstall_homebrew(fs, Path(temporary))
+            self.assertEqual(result.local_backup.read_bytes(), original)
+        self.assertEqual(fs.files["/BUNDLE/SY/135804SY.MBA"], original)
+        self.assertNotIn("/HB", fs.directories)
+        self.assertFalse(any(path.startswith("/HB/") for path in fs.files))
+        system_write = fs.log.index(("write", "/BUNDLE/SY/135804SY.MBA"))
+        first_delete = next(i for i, item in enumerate(fs.log) if item[0] == "delete")
+        self.assertLess(system_write, first_delete)
+
+    def test_names_longer_than_retail_directory_limit_are_rejected(self):
+        fs = FakeFS()
+        fs.mkdir("/HB")
+        with self.assertRaisesRegex(ManagerError, "at most 12"):
+            add_homebrew(fs, "ThirteenX.MBA", mba("SY", 0x22))
+
+    def test_retail_dmode_close_failure_reports_reboot(self):
+        fs = FakeFS()
+        def retail_empty_close(path, data):
+            fs.files[path] = bytes(data)
+            raise OSError("closing file failed (device status -1)")
+        fs.write_file = retail_empty_close
+        self.assertTrue(set_developer_mode(fs, True))
+        self.assertEqual(fs.files["/ETC/DMODE"], b"")
 
 
 if __name__ == "__main__":

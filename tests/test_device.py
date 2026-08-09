@@ -12,6 +12,19 @@ def response(status=0):
     return bytes(data)
 
 
+def directory_page(*entries):
+    data = bytearray(BLOCK_SIZE)
+    for index, (name, size, kind) in enumerate(entries):
+        offset = index * 28
+        struct.pack_into("<h", data, offset, index)
+        encoded = name.encode("ascii")
+        data[offset + 4 : offset + 4 + len(encoded)] = encoded
+        struct.pack_into("<H", data, offset + 18, kind)
+        struct.pack_into("<I", data, offset + 24, size)
+    struct.pack_into("<h", data, len(entries) * 28, -1)
+    return bytes(data)
+
+
 class Transport:
     def __init__(self, reads):
         self.reads = list(reads)
@@ -44,6 +57,34 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(struct.unpack_from("<I", request, 0)[0], 0x0A)
         self.assertEqual(request[4:9], b"A:\\HB")
 
+    def test_rmdir_uses_retail_command_zero_b(self):
+        transport = Transport([response(ord("A")), response()])
+        MobiGoFS(transport).rmdir("/HB")
+        request = transport.writes[1]
+        self.assertEqual(struct.unpack_from("<I", request, 0)[0], 0x0B)
+        self.assertEqual(request[4:9], b"A:\\HB")
+
+    def test_retail_zero_stat_does_not_make_absent_file_exist(self):
+        fs = MobiGoFS(Transport([response(0), directory_page()]))
+        fs._drive = "A"
+        self.assertIsNone(fs.stat_size("/HB/DOESNOT.MBA"))
+
+    def test_retail_directory_is_found_through_parent_listing(self):
+        fs = MobiGoFS(Transport([response(0), directory_page(("HB", 0, 2))]))
+        fs._drive = "A"
+        self.assertEqual(fs.stat_size("/HB"), 0)
+
+    def test_existing_empty_file_uses_unambiguous_file_type(self):
+        fs = MobiGoFS(Transport([response(1), response(0)]))
+        fs._drive = "A"
+        self.assertEqual(fs.stat_size("/ETC/DMODE"), 0)
+
+    def test_odd_sized_write_is_rejected_before_device_io(self):
+        transport = Transport([])
+        with self.assertRaisesRegex(MobiGoError, "even byte length"):
+            MobiGoFS(transport).write_file("/HB/ODD.DAT", b"odd")
+        self.assertEqual(transport.writes, [])
+
 
 class MountedFilesystemTests(unittest.TestCase):
     def test_directory_and_empty_file_round_trip(self):
@@ -59,6 +100,8 @@ class MountedFilesystemTests(unittest.TestCase):
             )
             fs.delete("/HB/DMODE")
             self.assertIsNone(fs.stat_size("/HB/DMODE"))
+            fs.rmdir("/HB")
+            self.assertIsNone(fs.stat_size("/HB"))
 
     def test_parent_must_exist(self):
         with tempfile.TemporaryDirectory() as directory:

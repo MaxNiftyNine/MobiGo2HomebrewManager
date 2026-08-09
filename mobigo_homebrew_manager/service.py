@@ -15,7 +15,7 @@ from .mba import require_role
 
 HB_DIRECTORY = "/HB"
 CATALOG_PATH = "/HB/INDEX.HB"
-SYSTEM_BACKUP_NAME = "SystemMenu.MBA"
+SYSTEM_BACKUP_NAME = "System.MBA"
 DMODE_PATH = "/ETC/DMODE"
 
 
@@ -32,6 +32,7 @@ class RemoteFS(Protocol):
     def write_file(self, path: str, data: bytes) -> None: ...
     def delete(self, path: str) -> None: ...
     def mkdir(self, path: str) -> None: ...
+    def rmdir(self, path: str) -> None: ...
     def stat_size(self, path: str) -> int | None: ...
 
 
@@ -47,9 +48,13 @@ def _validate_filename(filename: str) -> str:
     if not filename or filename in {".", ".."} or "/" in filename or "\\" in filename:
         raise ManagerError("filename must be one plain device filename")
     try:
-        filename.encode("ascii")
+        encoded = filename.encode("ascii")
     except UnicodeEncodeError as error:
         raise ManagerError("MobiGo filenames must be ASCII") from error
+    if len(encoded) > 12:
+        raise ManagerError(
+            "MobiGo directory listings preserve at most 12 filename characters"
+        )
     if len(("A:\\HB\\" + filename).encode("ascii")) > 41:
         raise ManagerError("filename is too long for the MobiGo launch API")
     return filename
@@ -123,6 +128,13 @@ class InstallResult:
     launcher_sha256: str
 
 
+@dataclass(frozen=True)
+class UninstallResult:
+    system_path: str
+    local_backup: Path
+    restored_sha256: str
+
+
 def install_launcher(
     fs: RemoteFS,
     launcher: bytes,
@@ -144,7 +156,7 @@ def install_launcher(
     backup_path = HB_DIRECTORY + "/" + SYSTEM_BACKUP_NAME
     fs.write_file(backup_path, original)
     if fs.read_file(backup_path) != original:
-        raise ManagerError("/HB/SystemMenu.MBA backup verification failed; SY was untouched")
+        raise ManagerError(f"{backup_path} backup verification failed; SY was untouched")
     rebuild_catalog(fs)
 
     try:
@@ -194,10 +206,12 @@ def add_homebrew(fs: RemoteFS, filename: str, data: bytes, *, overwrite: bool = 
     return target
 
 
-def delete_homebrew(fs: RemoteFS, filename: str, *, allow_system_backup: bool = False) -> None:
+def delete_homebrew(fs: RemoteFS, filename: str) -> None:
     filename = _validate_filename(filename)
-    if filename.casefold() == SYSTEM_BACKUP_NAME.casefold() and not allow_system_backup:
-        raise ManagerError("SystemMenu.MBA is the recovery copy and is protected")
+    if filename.casefold() == SYSTEM_BACKUP_NAME.casefold():
+        raise ManagerError(
+            f"{SYSTEM_BACKUP_NAME} can only be removed by 'Delete all homebrew and exit'"
+        )
     path = HB_DIRECTORY + "/" + filename
     if fs.stat_size(path) is None:
         raise ManagerError(f"homebrew does not exist: {filename}")
@@ -205,6 +219,69 @@ def delete_homebrew(fs: RemoteFS, filename: str, *, allow_system_backup: bool = 
     if fs.stat_size(path) is not None:
         raise ManagerError(f"device still reports {path} after deletion")
     rebuild_catalog(fs)
+
+
+def _remove_tree(fs: RemoteFS, path: str) -> None:
+    entries = list(fs.listdir(path))
+    entries.sort(key=lambda item: item.name.casefold() == SYSTEM_BACKUP_NAME.casefold())
+    for entry in entries:
+        child = path.rstrip("/") + "/" + entry.name
+        if entry.is_directory:
+            _remove_tree(fs, child)
+        else:
+            fs.delete(child)
+            if fs.stat_size(child) is not None:
+                raise ManagerError(f"device still reports {child} after deletion")
+    fs.rmdir(path)
+    if fs.stat_size(path) is not None:
+        raise ManagerError(f"device still reports {path} after directory removal")
+
+
+def uninstall_homebrew(
+    fs: RemoteFS,
+    backup_directory: Path,
+) -> UninstallResult:
+    """Restore original SY, then remove /HB only after restoration verifies."""
+    system_path = discover_system_path(fs)
+    recovery_path = HB_DIRECTORY + "/" + SYSTEM_BACKUP_NAME
+    if fs.stat_size(recovery_path) is None:
+        raise ManagerError(
+            f"cannot uninstall without the verified {recovery_path} recovery copy"
+        )
+    original = fs.read_file(recovery_path)
+    active = fs.read_file(system_path)
+    require_role(original, "SY")
+    require_role(active, "SY")
+    local_backup = _atomic_backup(
+        backup_directory,
+        "uninstall-" + PurePosixPath(system_path).name,
+        original,
+    )
+
+    if active != original:
+        try:
+            fs.write_file(system_path, original)
+            if fs.read_file(system_path) != original:
+                raise ManagerError("restored system-menu read-back verification failed")
+        except Exception as restore_error:
+            try:
+                fs.write_file(system_path, active)
+                rolled_back = fs.read_file(system_path)
+            except Exception as rollback_error:
+                raise ManagerError(
+                    "system-menu restore failed and launcher rollback also failed; "
+                    f"keep the device powered and use {local_backup}: {rollback_error}"
+                ) from restore_error
+            if rolled_back != active:
+                raise ManagerError(
+                    f"system-menu restore and launcher rollback did not verify; use {local_backup}"
+                ) from restore_error
+            raise ManagerError("system-menu restore failed; active launcher was restored") from restore_error
+
+    if fs.read_file(system_path) != original:
+        raise ManagerError("original system menu is not active; /HB was left untouched")
+    _remove_tree(fs, HB_DIRECTORY)
+    return UninstallResult(system_path, local_backup, digest(original))
 
 
 def rename_file(fs: RemoteFS, source: str, destination: str) -> None:
@@ -224,12 +301,23 @@ def rename_file(fs: RemoteFS, source: str, destination: str) -> None:
         rebuild_catalog(fs)
 
 
-def set_developer_mode(fs: RemoteFS, enabled: bool) -> None:
+def set_developer_mode(fs: RemoteFS, enabled: bool) -> bool:
+    """Set D-mode and return whether retail firmware now requires a reboot."""
     if enabled:
-        fs.write_file(DMODE_PATH, b"")
+        try:
+            fs.write_file(DMODE_PATH, b"")
+        except Exception as error:
+            # Retail firmware creates the zero-byte marker, then invalidates
+            # the mailbox handle and reports -1 while closing it.  No further
+            # filesystem command is reliable until the console reboots.
+            if "closing file failed (device status -1)" in str(error):
+                return True
+            raise
         if fs.stat_size(DMODE_PATH) != 0:
             raise ManagerError("DMODE creation did not verify")
+        return False
     elif fs.stat_size(DMODE_PATH) is not None:
         fs.delete(DMODE_PATH)
         if fs.stat_size(DMODE_PATH) is not None:
             raise ManagerError("DMODE deletion did not verify")
+    return False

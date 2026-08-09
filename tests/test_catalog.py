@@ -7,7 +7,7 @@ class CatalogTests(unittest.TestCase):
     def test_round_trip_keeps_mba_suffix(self):
         entries = [
             CatalogEntry(r"A:\HB\Pong.MBA", "Pong.MBA"),
-            CatalogEntry(r"A:\HB\SystemMenu.MBA", "SystemMenu.MBA"),
+            CatalogEntry(r"A:\HB\System.MBA", "System.MBA"),
         ]
         self.assertEqual(decode(encode(entries)), entries)
 
