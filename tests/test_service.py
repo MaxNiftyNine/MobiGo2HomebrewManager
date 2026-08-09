@@ -5,14 +5,16 @@ import struct
 import tempfile
 import unittest
 
-from mobigo_homebrew_manager.catalog import decode
+from mobigo_homebrew_manager.catalog import CatalogEntry, decode
 from mobigo_homebrew_manager.service import (
     ManagerError,
     RemoteEntry,
     add_homebrew,
     delete_homebrew,
     install_launcher,
+    install_or_update_launcher,
     rename_file,
+    rebuild_catalog,
     set_developer_mode,
     uninstall_homebrew,
 )
@@ -99,7 +101,8 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(fs.files["/HB/System.MBA"], original)
         self.assertEqual(fs.files["/BUNDLE/SY/135804SY.MBA"], launcher)
         catalog = decode(fs.files["/HB/INDEX.HB"])
-        self.assertEqual(catalog[0].label, "System.MBA")
+        self.assertEqual(catalog[0].title, "System Menu")
+        self.assertEqual(catalog[0].icon, 5)
         system_write = fs.log.index(("write", "/BUNDLE/SY/135804SY.MBA"))
         self.assertLess(fs.log.index(("read", "/HB/System.MBA")), system_write)
         self.assertLess(fs.log.index(("read", "/HB/INDEX.HB")), system_write)
@@ -111,6 +114,33 @@ class ServiceTests(unittest.TestCase):
             with self.assertRaisesRegex(ManagerError, "backup verification"):
                 install_launcher(fs, mba("SY", 0x22), Path(temporary))
         self.assertNotIn(("write", "/BUNDLE/SY/135804SY.MBA"), fs.log)
+
+    def test_launcher_update_preserves_original_system_recovery(self):
+        fs = FakeFS()
+        original = fs.files["/BUNDLE/SY/135804SY.MBA"]
+        old_launcher = mba("SY", 0x22)
+        new_launcher = mba("SY", 0x33)
+        fs.files["/BUNDLE/SY/135804SY.MBA"] = old_launcher
+        fs.mkdir("/HB")
+        fs.files["/HB/System.MBA"] = original
+        with tempfile.TemporaryDirectory() as temporary:
+            result = install_or_update_launcher(fs, new_launcher, Path(temporary))
+            self.assertEqual(result.local_backup.read_bytes(), original)
+        self.assertEqual(fs.files["/HB/System.MBA"], original)
+        self.assertEqual(fs.files["/BUNDLE/SY/135804SY.MBA"], new_launcher)
+
+    def test_rebuild_migrates_legacy_filename_cards_to_metadata(self):
+        fs = FakeFS()
+        fs.mkdir("/HB")
+        fs.files["/HB/Pong.MBA"] = mba("G1", 0x33)
+        path = b"A:\\HB\\Pong.MBA".ljust(42, b"\0")
+        label = b"Pong.MBA".ljust(20, b"\0")
+        fs.files["/HB/INDEX.HB"] = (
+            b"HB01" + struct.pack("<HH", 1, 64) + path + label + b"\0\0"
+        )
+        entries = rebuild_catalog(fs)
+        self.assertEqual(fs.files["/HB/INDEX.HB"][:4], b"HB02")
+        self.assertEqual((entries[0].title, entries[0].icon), ("Pong", 1))
 
     def test_install_never_writes_system_when_hb_directory_is_not_published(self):
         fs = FakeFS()
@@ -143,11 +173,24 @@ class ServiceTests(unittest.TestCase):
         fs = FakeFS()
         fs.mkdir("/HB")
         app = mba("G1", 0x33)
-        add_homebrew(fs, "Pong.MBA", app)
+        add_homebrew(
+            fs,
+            "Pong.MBA",
+            app,
+            metadata=CatalogEntry(
+                "unused", "Pong", "Classic paddle game", "Max", 1
+            ),
+        )
         self.assertEqual(fs.files["/HB/Pong.MBA"], app)
+        self.assertEqual(
+            decode(fs.files["/HB/INDEX.HB"])[0].description,
+            "Classic paddle game",
+        )
         rename_file(fs, "/HB/Pong.MBA", "/HB/Pong2.MBA")
         self.assertNotIn("/HB/Pong.MBA", fs.files)
         self.assertEqual(fs.files["/HB/Pong2.MBA"], app)
+        renamed = decode(fs.files["/HB/INDEX.HB"])[0]
+        self.assertEqual((renamed.title, renamed.icon), ("Pong", 1))
         delete_homebrew(fs, "Pong2.MBA")
         self.assertNotIn("/HB/Pong2.MBA", fs.files)
         set_developer_mode(fs, True)

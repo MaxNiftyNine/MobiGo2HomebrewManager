@@ -4,6 +4,13 @@ A cross-platform Python GUI for managing `.MBA` homebrew on a VTech MobiGo 2.
 It preserves `.MBA` filenames, maintains the launcher's `/HB/INDEX.HB` catalog,
 and provides a guarded full-filesystem view for advanced work.
 
+Starter projects place the launcher title in a same-stem `.HBI` file. Uploading
+the `.MBA` imports that companion automatically. The launcher reads its picture
+from the palette and 64×104 menu artwork already baked into the MBA, so the
+Manager does not supply substitute icons. Updating an existing launcher
+preserves `/HB/System.MBA` instead of treating the old launcher as a new
+system-menu backup.
+
 The Manager is distributed as Python source, not as a platform-specific `.app`
 or `.exe`. Run it from a terminal with raw-device privileges so errors remain
 visible and macOS grants disk access to the same terminal process.

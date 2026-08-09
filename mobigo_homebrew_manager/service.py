@@ -85,16 +85,72 @@ def list_homebrew(fs: RemoteFS) -> list[RemoteEntry]:
     )
 
 
-def rebuild_catalog(fs: RemoteFS) -> list[CatalogEntry]:
+def list_catalog(fs: RemoteFS) -> list[CatalogEntry]:
+    if fs.stat_size(CATALOG_PATH) is None:
+        return []
+    try:
+        return decode(fs.read_file(CATALOG_PATH))
+    except ValueError as error:
+        raise ManagerError(f"INDEX.HB is invalid: {error}") from error
+
+
+def _catalog_metadata(fs: RemoteFS) -> dict[str, CatalogEntry]:
+    if fs.stat_size(CATALOG_PATH) is None:
+        return {}
+    try:
+        raw = fs.read_file(CATALOG_PATH)
+        entries = decode(raw)
+    except (ManagerError, OSError, ValueError):
+        return {}
+    if raw[:4] == b"HB01":
+        return {
+            PurePosixPath(item.path.replace("\\", "/")).name.casefold():
+                _default_metadata(
+                    PurePosixPath(item.path.replace("\\", "/")).name
+                )
+            for item in entries
+        }
+    return {
+        PurePosixPath(item.path.replace("\\", "/")).name.casefold(): item
+        for item in entries
+    }
+
+
+def _default_metadata(filename: str) -> CatalogEntry:
+    if filename.casefold() == SYSTEM_BACKUP_NAME.casefold():
+        return CatalogEntry(
+            "unused", "System Menu", "Original MobiGo menu", "VTech", 5
+        )
+    return CatalogEntry("unused", PurePosixPath(filename).stem, icon=1)
+
+
+def rebuild_catalog(
+    fs: RemoteFS,
+    metadata_overrides: dict[str, CatalogEntry] | None = None,
+) -> list[CatalogEntry]:
     apps = list_homebrew(fs)
     if len(apps) > MAX_ENTRIES:
         raise ManagerError(
             f"launcher supports {MAX_ENTRIES} apps; device has {len(apps)} in /HB"
         )
-    entries = [
-        CatalogEntry("A:\\HB\\" + item.name, item.name)
-        for item in apps
-    ]
+    metadata = _catalog_metadata(fs)
+    if metadata_overrides:
+        metadata.update(
+            {name.casefold(): value for name, value in metadata_overrides.items()}
+        )
+    entries = []
+    for item in apps:
+        detail = metadata.get(item.name.casefold(), _default_metadata(item.name))
+        entries.append(
+            CatalogEntry(
+                "A:\\HB\\" + item.name,
+                detail.title,
+                detail.description,
+                detail.author,
+                detail.icon,
+                detail.flags,
+            )
+        )
     data = encode(entries)
     fs.write_file(CATALOG_PATH, data)
     if fs.read_file(CATALOG_PATH) != data:
@@ -186,7 +242,71 @@ def install_launcher(
     )
 
 
-def add_homebrew(fs: RemoteFS, filename: str, data: bytes, *, overwrite: bool = False) -> str:
+def install_or_update_launcher(
+    fs: RemoteFS,
+    launcher: bytes,
+    backup_directory: Path,
+) -> InstallResult:
+    """Install a launcher, or update one without replacing the original recovery MBA."""
+    require_role(launcher, "SY")
+    recovery_path = HB_DIRECTORY + "/" + SYSTEM_BACKUP_NAME
+    if fs.stat_size(recovery_path) is None:
+        return install_launcher(fs, launcher, backup_directory)
+
+    system_path = discover_system_path(fs)
+    active = fs.read_file(system_path)
+    original = fs.read_file(recovery_path)
+    require_role(active, "SY")
+    require_role(original, "SY")
+    if active == launcher:
+        raise ManagerError("HomebrewLauncher.MBA is already up to date")
+
+    # Preserve the known recovery copy both remotely and locally. The active
+    # launcher is separately captured so a failed update can be rolled back.
+    local_backup = _atomic_backup(
+        backup_directory,
+        "recovery-" + PurePosixPath(system_path).name,
+        original,
+    )
+    if fs.read_file(recovery_path) != original:
+        raise ManagerError(f"{recovery_path} recovery copy changed; SY was untouched")
+    rebuild_catalog(fs)
+
+    try:
+        fs.write_file(system_path, launcher)
+        if fs.read_file(system_path) != launcher:
+            raise ManagerError("updated launcher read-back verification failed")
+    except Exception as update_error:
+        try:
+            fs.write_file(system_path, active)
+            rolled_back = fs.read_file(system_path)
+        except Exception as rollback_error:
+            raise ManagerError(
+                "launcher update failed and rollback also failed; keep the device "
+                f"powered and use {local_backup}: {rollback_error}"
+            ) from update_error
+        if rolled_back != active:
+            raise ManagerError(
+                f"launcher update and rollback did not verify; recovery is {local_backup}"
+            ) from update_error
+        raise ManagerError("launcher update failed; previous launcher was restored") from update_error
+
+    return InstallResult(
+        system_path,
+        local_backup,
+        digest(original),
+        digest(launcher),
+    )
+
+
+def add_homebrew(
+    fs: RemoteFS,
+    filename: str,
+    data: bytes,
+    *,
+    overwrite: bool = False,
+    metadata: CatalogEntry | None = None,
+) -> str:
     filename = _validate_filename(filename)
     if not filename.upper().endswith(".MBA"):
         raise ManagerError("homebrew filename must retain its .MBA extension")
@@ -202,7 +322,8 @@ def add_homebrew(fs: RemoteFS, filename: str, data: bytes, *, overwrite: bool = 
     fs.write_file(target, data)
     if fs.read_file(target) != data:
         raise ManagerError(f"upload verification failed for {target}")
-    rebuild_catalog(fs)
+    overrides = {filename: metadata} if metadata is not None else None
+    rebuild_catalog(fs, overrides)
     return target
 
 
@@ -289,6 +410,7 @@ def rename_file(fs: RemoteFS, source: str, destination: str) -> None:
     if not source.startswith("/") or not destination.startswith("/"):
         raise ManagerError("rename paths must be absolute")
     data = fs.read_file(source)
+    prior_metadata = _catalog_metadata(fs) if source.upper().startswith("/HB/") else {}
     if fs.stat_size(destination) is not None:
         raise ManagerError(f"rename destination already exists: {destination}")
     fs.write_file(destination, data)
@@ -298,7 +420,13 @@ def rename_file(fs: RemoteFS, source: str, destination: str) -> None:
     if fs.stat_size(source) is not None:
         raise ManagerError("rename destination verified, but source deletion failed")
     if source.upper().startswith("/HB/") or destination.upper().startswith("/HB/"):
-        rebuild_catalog(fs)
+        source_name = PurePosixPath(source).name
+        destination_name = PurePosixPath(destination).name
+        detail = prior_metadata.get(source_name.casefold())
+        rebuild_catalog(
+            fs,
+            {destination_name: detail} if detail is not None else None,
+        )
 
 
 def set_developer_mode(fs: RemoteFS, enabled: bool) -> bool:

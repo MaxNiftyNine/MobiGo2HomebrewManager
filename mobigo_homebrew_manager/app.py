@@ -17,6 +17,7 @@ except ImportError:  # Browse remains available in source-only environments.
 
 from .device import DeviceSession
 from .elevation import invoking_user_home
+from .catalog import load_hbi
 from .resources import launcher_bytes
 from .service import (
     DMODE_PATH,
@@ -27,7 +28,8 @@ from .service import (
     add_homebrew,
     delete_homebrew,
     discover_system_path,
-    install_launcher,
+    install_or_update_launcher,
+    list_catalog,
     list_homebrew,
     rename_file,
     set_developer_mode,
@@ -185,12 +187,17 @@ class HomebrewManager(RootClass):
 
     def _home_tab(self) -> None:
         self.apps = ttk.Treeview(
-            self.home_tab, columns=("name", "size"), show="headings", selectmode="browse"
+            self.home_tab,
+            columns=("name", "title", "size"),
+            show="headings",
+            selectmode="browse",
         )
-        self.apps.heading("name", text="Homebrew in /HB")
+        self.apps.heading("name", text="File in /HB")
+        self.apps.heading("title", text="Launcher name")
         self.apps.heading("size", text="Size")
-        self.apps.column("name", width=560)
-        self.apps.column("size", width=120, anchor="e")
+        self.apps.column("name", width=180)
+        self.apps.column("title", width=390)
+        self.apps.column("size", width=100, anchor="e")
         self.apps.pack(fill="both", expand=True)
         buttons = ttk.Frame(self.home_tab, padding=(0, 10, 0, 0))
         buttons.pack(fill="x")
@@ -294,17 +301,31 @@ class HomebrewManager(RootClass):
             launcher = launcher_bytes()
             with DeviceSession() as fs:
                 apps = list_homebrew(fs)
+                catalog = list_catalog(fs)
                 tree = self._walk(fs)
                 dmode = fs.stat_size(DMODE_PATH) is not None
                 system_path = discover_system_path(fs)
                 system = fs.read_file(system_path)
-            return apps, tree, dmode, system == launcher
+            return apps, catalog, tree, dmode, system == launcher
 
         def complete(result) -> None:
-            apps, tree, dmode, installed = result
+            apps, catalog, tree, dmode, installed = result
+            details = {
+                PurePosixPath(item.path.replace("\\", "/")).name.casefold(): item
+                for item in catalog
+            }
             self.apps.delete(*self.apps.get_children())
             for item in apps:
-                self.apps.insert("", "end", values=(item.name, self._size(item.size)))
+                detail = details.get(item.name.casefold())
+                self.apps.insert(
+                    "",
+                    "end",
+                    values=(
+                        item.name,
+                        detail.title if detail else PurePosixPath(item.name).stem,
+                        self._size(item.size),
+                    ),
+                )
             self.tree.delete(*self.tree.get_children())
             for path, item in tree:
                 self.tree.insert(
@@ -326,9 +347,9 @@ class HomebrewManager(RootClass):
                 return
             if prompt and messagebox.askyesno(
                 "Install Homebrew Launcher?",
-                "The system menu is not HomebrewLauncher.MBA.\n\n"
-                "Install it now? The Manager will first download SY, save a local backup, "
-                f"copy it to /HB/{SYSTEM_BACKUP_NAME}, verify both backups, and only then replace SY.",
+                "HomebrewLauncher.MBA is not installed or has an update.\n\n"
+                "Install it now? The Manager will preserve and verify the original "
+                f"system menu at /HB/{SYSTEM_BACKUP_NAME} before replacing SY.",
                 parent=self,
             ):
                 self.install()
@@ -347,15 +368,15 @@ class HomebrewManager(RootClass):
         backups = invoking_user_home() / "Documents" / "MobiGo 2 Backups"
         def worker():
             with DeviceSession() as fs:
-                return install_launcher(fs, launcher_bytes(), backups)
+                return install_or_update_launcher(fs, launcher_bytes(), backups)
         def complete(result) -> None:
             messagebox.showinfo(
-                "Launcher installed",
-                f"HomebrewLauncher.MBA is installed.\n\nLocal recovery backup:\n{result.local_backup}",
+                "Launcher ready",
+                f"HomebrewLauncher.MBA is installed and verified.\n\nLocal recovery backup:\n{result.local_backup}",
                 parent=self,
             )
             self.refresh()
-        self._job("Backing up SY and installing HomebrewLauncher.MBA…", worker, complete)
+        self._job("Preserving recovery SY and installing HomebrewLauncher.MBA…", worker, complete)
 
     def choose_add(self) -> None:
         paths = filedialog.askopenfilenames(
@@ -375,7 +396,17 @@ class HomebrewManager(RootClass):
         def worker():
             with DeviceSession() as fs:
                 for path in paths:
-                    add_homebrew(fs, path.name, path.read_bytes(), overwrite=False)
+                    hbi = path.with_suffix(".HBI")
+                    if not hbi.is_file():
+                        hbi = path.with_suffix(".hbi")
+                    metadata = load_hbi(hbi, fallback_title=path.stem)
+                    add_homebrew(
+                        fs,
+                        path.name,
+                        path.read_bytes(),
+                        overwrite=False,
+                        metadata=metadata,
+                    )
             return len(paths)
         def complete(count) -> None:
             self._status(f"Added {count} .MBA file(s)")
