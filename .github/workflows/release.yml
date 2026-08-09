@@ -25,7 +25,8 @@ jobs:
           cp -R mobigo_homebrew_manager assets "$ROOT/"
           cp mobigo_manager.py requirements.txt pyproject.toml README.md LICENSE "$ROOT/"
           cd dist
-          zip -r ../MobiGo2HomebrewManager-Python.zip MobiGo2HomebrewManager-Python
+          zip -r ../MobiGo2HomebrewManager-Python.zip MobiGo2HomebrewManager-Python \
+            -x '*/__pycache__/*' '*.pyc'
       - uses: actions/upload-artifact@v4
         with:
           name: MobiGo2HomebrewManager-Python
