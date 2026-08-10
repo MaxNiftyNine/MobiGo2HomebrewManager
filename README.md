@@ -66,30 +66,28 @@ Then open PowerShell **as Administrator** and run:
 
 The first-run installer performs these operations in order:
 
-1. discover the device's actual regional `/BUNDLE/SY/*SY.MBA` filename;
-2. download SY and fsync a byte-verified local recovery backup;
+1. locate the main menu at `/USENG/MM.MBA`;
+2. download `/USENG/MM.MBA` and fsync a byte-verified local recovery backup;
 3. create and rediscover `/HB` through the device's root directory;
 4. upload and read back `/HB/System.MBA`;
 5. create and verify `/HB/INDEX.HB` so the original menu remains launchable;
-6. replace SY with `HomebrewLauncher.MBA` and read it back byte-for-byte;
-7. automatically restore the original SY if final installation fails.
+6. replace `/USENG/MM.MBA` with `HomebrewLauncher.MBA` and read it back byte-for-byte;
+7. automatically restore the original `MM.MBA` if final installation fails.
 
 Never unplug or power off the console during a transfer. Advanced mode allows
-upload, rename, and delete operations on the active SY path. Deleting or
-corrupting SY can make the console unbootable, so preserve an independent
+upload, rename, and delete operations on `/USENG/MM.MBA`. Deleting or
+corrupting that file can make the console unbootable, so preserve an independent
 recovery backup first.
 
 `System.MBA` cannot be deleted by the normal or Advanced delete buttons. Use
 **Delete all homebrew and exit** instead. That transaction creates another
-local recovery backup, restores `System.MBA` to the discovered regional SY
-path, verifies the restored system menu byte-for-byte, and only then deletes
+local recovery backup, restores `System.MBA` to `/USENG/MM.MBA`, verifies the restored system menu byte-for-byte, and only then deletes
 the contents of `/HB`, removes the `/HB` directory, and closes the Manager. If
 restoration fails, it rolls the active launcher back and leaves `/HB` intact.
 
 ## Physical-hardware evidence
 
-On 2026-08-08 the Manager was tested against a US MobiGo 2 using dynamically
-discovered regional SY storage. Retail firmware behavior established by that test:
+The 2026-08-08 physical hardware test predates the `/USENG/MM.MBA` target change. That test established these retail filesystem behaviors:
 
 - a missing path may return successful `stat` status with size zero, so the
   Manager proves existence through path type plus the parent directory listing;
@@ -110,7 +108,7 @@ sudo python3 scripts/hardware_test.py --device /dev/disk5
 ```
 
 Add `--test-dmode` only when you are ready to reboot immediately afterward.
-Add `--install-launcher` only after preserving an independent SY backup.
+Add `--install-launcher` only after preserving an independent `/USENG/MM.MBA` backup.
 
 ## Development tests
 

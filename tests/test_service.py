@@ -33,8 +33,8 @@ def mba(role: str, fill: int) -> bytes:
 
 class FakeFS:
     def __init__(self):
-        self.files = {"/BUNDLE/SY/135804SY.MBA": mba("SY", 0x11)}
-        self.directories = {"/", "/BUNDLE", "/BUNDLE/SY", "/ETC"}
+        self.files = {"/USENG/MM.MBA": mba("G1", 0x11)}
+        self.directories = {"/", "/USENG", "/ETC"}
         self.log = []
         self.corrupt_path = None
         self.fail_path = None
@@ -94,16 +94,16 @@ class ServiceTests(unittest.TestCase):
     def test_install_backs_up_twice_before_system_write(self):
         fs = FakeFS()
         launcher = mba("SY", 0x22)
-        original = fs.files["/BUNDLE/SY/135804SY.MBA"]
+        original = fs.files["/USENG/MM.MBA"]
         with tempfile.TemporaryDirectory() as temporary:
             result = install_launcher(fs, launcher, Path(temporary))
             self.assertEqual(result.local_backup.read_bytes(), original)
         self.assertEqual(fs.files["/HB/System.MBA"], original)
-        self.assertEqual(fs.files["/BUNDLE/SY/135804SY.MBA"], launcher)
+        self.assertEqual(fs.files["/USENG/MM.MBA"], launcher)
         catalog = decode(fs.files["/HB/INDEX.HB"])
         self.assertEqual(catalog[0].title, "System Menu")
         self.assertEqual(catalog[0].icon, 5)
-        system_write = fs.log.index(("write", "/BUNDLE/SY/135804SY.MBA"))
+        system_write = fs.log.index(("write", "/USENG/MM.MBA"))
         self.assertLess(fs.log.index(("read", "/HB/System.MBA")), system_write)
         self.assertLess(fs.log.index(("read", "/HB/INDEX.HB")), system_write)
 
@@ -113,21 +113,21 @@ class ServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             with self.assertRaisesRegex(ManagerError, "backup verification"):
                 install_launcher(fs, mba("SY", 0x22), Path(temporary))
-        self.assertNotIn(("write", "/BUNDLE/SY/135804SY.MBA"), fs.log)
+        self.assertNotIn(("write", "/USENG/MM.MBA"), fs.log)
 
     def test_launcher_update_preserves_original_system_recovery(self):
         fs = FakeFS()
-        original = fs.files["/BUNDLE/SY/135804SY.MBA"]
+        original = fs.files["/USENG/MM.MBA"]
         old_launcher = mba("SY", 0x22)
         new_launcher = mba("SY", 0x33)
-        fs.files["/BUNDLE/SY/135804SY.MBA"] = old_launcher
+        fs.files["/USENG/MM.MBA"] = old_launcher
         fs.mkdir("/HB")
         fs.files["/HB/System.MBA"] = original
         with tempfile.TemporaryDirectory() as temporary:
             result = install_or_update_launcher(fs, new_launcher, Path(temporary))
             self.assertEqual(result.local_backup.read_bytes(), original)
         self.assertEqual(fs.files["/HB/System.MBA"], original)
-        self.assertEqual(fs.files["/BUNDLE/SY/135804SY.MBA"], new_launcher)
+        self.assertEqual(fs.files["/USENG/MM.MBA"], new_launcher)
 
     def test_rebuild_migrates_legacy_filename_cards_to_metadata(self):
         fs = FakeFS()
@@ -148,16 +148,16 @@ class ServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             with self.assertRaisesRegex(ManagerError, "did not publish /HB"):
                 install_launcher(fs, mba("SY", 0x22), Path(temporary))
-        self.assertNotIn(("write", "/BUNDLE/SY/135804SY.MBA"), fs.log)
+        self.assertNotIn(("write", "/USENG/MM.MBA"), fs.log)
 
     def test_failed_launcher_write_restores_original(self):
         fs = FakeFS()
-        original = fs.files["/BUNDLE/SY/135804SY.MBA"]
+        original = fs.files["/USENG/MM.MBA"]
         writes = 0
         real_write = fs.write_file
         def fail_once(path, data):
             nonlocal writes
-            if path == "/BUNDLE/SY/135804SY.MBA":
+            if path == "/USENG/MM.MBA":
                 writes += 1
                 if writes == 1:
                     fs.files[path] = b"partial"
@@ -165,9 +165,9 @@ class ServiceTests(unittest.TestCase):
             return real_write(path, data)
         fs.write_file = fail_once
         with tempfile.TemporaryDirectory() as temporary:
-            with self.assertRaisesRegex(ManagerError, "original SY was restored"):
+            with self.assertRaisesRegex(ManagerError, "original MM.MBA was restored"):
                 install_launcher(fs, mba("SY", 0x22), Path(temporary))
-        self.assertEqual(fs.files["/BUNDLE/SY/135804SY.MBA"], original)
+        self.assertEqual(fs.files["/USENG/MM.MBA"], original)
 
     def test_add_delete_rename_and_dmode_verify(self):
         fs = FakeFS()
@@ -198,6 +198,15 @@ class ServiceTests(unittest.TestCase):
         set_developer_mode(fs, False)
         self.assertNotIn("/ETC/DMODE", fs.files)
 
+    def test_add_homebrew_accepts_unrecognized_mba_metadata(self):
+        fs = FakeFS()
+        fs.mkdir("/HB")
+        custom = bytearray(mba("G1", 0x44))
+        struct.pack_into("<III", custom, 0x10, 0x1F, 0x22D88B, 0x224800)
+        app = bytes(custom)
+        add_homebrew(fs, "Custom.MBA", app)
+        self.assertEqual(fs.files["/HB/Custom.MBA"], app)
+
     def test_recovery_copy_requires_full_uninstall(self):
         fs = FakeFS()
         fs.mkdir("/HB")
@@ -207,9 +216,9 @@ class ServiceTests(unittest.TestCase):
 
     def test_uninstall_restores_system_then_removes_hb_tree(self):
         fs = FakeFS()
-        original = fs.files["/BUNDLE/SY/135804SY.MBA"]
+        original = fs.files["/USENG/MM.MBA"]
         launcher = mba("SY", 0x22)
-        fs.files["/BUNDLE/SY/135804SY.MBA"] = launcher
+        fs.files["/USENG/MM.MBA"] = launcher
         fs.mkdir("/HB")
         fs.mkdir("/HB/SUB")
         fs.files["/HB/System.MBA"] = original
@@ -218,10 +227,10 @@ class ServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             result = uninstall_homebrew(fs, Path(temporary))
             self.assertEqual(result.local_backup.read_bytes(), original)
-        self.assertEqual(fs.files["/BUNDLE/SY/135804SY.MBA"], original)
+        self.assertEqual(fs.files["/USENG/MM.MBA"], original)
         self.assertNotIn("/HB", fs.directories)
         self.assertFalse(any(path.startswith("/HB/") for path in fs.files))
-        system_write = fs.log.index(("write", "/BUNDLE/SY/135804SY.MBA"))
+        system_write = fs.log.index(("write", "/USENG/MM.MBA"))
         first_delete = next(i for i, item in enumerate(fs.log) if item[0] == "delete")
         self.assertLess(system_write, first_delete)
 

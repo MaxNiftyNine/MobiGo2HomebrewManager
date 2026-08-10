@@ -16,6 +16,7 @@ from .mba import require_role
 HB_DIRECTORY = "/HB"
 CATALOG_PATH = "/HB/INDEX.HB"
 SYSTEM_BACKUP_NAME = "System.MBA"
+SYSTEM_PATH = "/USENG/MM.MBA"
 DMODE_PATH = "/ETC/DMODE"
 
 
@@ -61,16 +62,17 @@ def _validate_filename(filename: str) -> str:
 
 
 def discover_system_path(fs: RemoteFS) -> str:
+    """Return the exact main-menu slot used for launcher installation."""
     matches = [
         item.name
-        for item in fs.listdir("/BUNDLE/SY")
-        if not item.is_directory and item.name.upper().endswith("SY.MBA")
+        for item in fs.listdir("/USENG")
+        if not item.is_directory and item.name.upper() == "MM.MBA"
     ]
     if len(matches) != 1:
         raise ManagerError(
-            f"expected exactly one regional SY.MBA, found {len(matches)}"
+            f"expected exactly one {SYSTEM_PATH}, found {len(matches)} matching file(s)"
         )
-    return "/BUNDLE/SY/" + matches[0]
+    return "/USENG/" + matches[0]
 
 
 def list_homebrew(fs: RemoteFS) -> list[RemoteEntry]:
@@ -196,11 +198,10 @@ def install_launcher(
     launcher: bytes,
     backup_directory: Path,
 ) -> InstallResult:
-    """Backup SY twice, verify both copies, then replace it transactionally."""
+    """Back up /USENG/MM.MBA twice, then replace it transactionally."""
     require_role(launcher, "SY")
     system_path = discover_system_path(fs)
     original = fs.read_file(system_path)
-    require_role(original, "SY")
     if original == launcher:
         raise ManagerError("HomebrewLauncher.MBA is already installed")
 
@@ -208,11 +209,11 @@ def install_launcher(
     if fs.stat_size(HB_DIRECTORY) is None:
         fs.mkdir(HB_DIRECTORY)
         if fs.stat_size(HB_DIRECTORY) is None:
-            raise ManagerError("device did not publish /HB after directory creation; SY was untouched")
+            raise ManagerError("device did not publish /HB after directory creation; /USENG/MM.MBA was untouched")
     backup_path = HB_DIRECTORY + "/" + SYSTEM_BACKUP_NAME
     fs.write_file(backup_path, original)
     if fs.read_file(backup_path) != original:
-        raise ManagerError(f"{backup_path} backup verification failed; SY was untouched")
+        raise ManagerError(f"{backup_path} backup verification failed; /USENG/MM.MBA was untouched")
     rebuild_catalog(fs)
 
     try:
@@ -225,14 +226,14 @@ def install_launcher(
             restored = fs.read_file(system_path)
         except Exception as restore_error:
             raise ManagerError(
-                "launcher install failed and automatic SY restore also failed; "
+                "launcher install failed and automatic MM.MBA restore also failed; "
                 f"keep the device powered and use {local_backup}: {restore_error}"
             ) from install_error
         if restored != original:
             raise ManagerError(
-                f"launcher install failed and SY restore did not verify; backup is {local_backup}"
+                f"launcher install failed and MM.MBA restore did not verify; backup is {local_backup}"
             ) from install_error
-        raise ManagerError("launcher install failed; original SY was restored") from install_error
+        raise ManagerError("launcher install failed; original MM.MBA was restored") from install_error
 
     return InstallResult(
         system_path,
@@ -257,7 +258,6 @@ def install_or_update_launcher(
     active = fs.read_file(system_path)
     original = fs.read_file(recovery_path)
     require_role(active, "SY")
-    require_role(original, "SY")
     if active == launcher:
         raise ManagerError("HomebrewLauncher.MBA is already up to date")
 
@@ -269,7 +269,7 @@ def install_or_update_launcher(
         original,
     )
     if fs.read_file(recovery_path) != original:
-        raise ManagerError(f"{recovery_path} recovery copy changed; SY was untouched")
+        raise ManagerError(f"{recovery_path} recovery copy changed; /USENG/MM.MBA was untouched")
     rebuild_catalog(fs)
 
     try:
@@ -310,8 +310,6 @@ def add_homebrew(
     filename = _validate_filename(filename)
     if not filename.upper().endswith(".MBA"):
         raise ManagerError("homebrew filename must retain its .MBA extension")
-    from .mba import inspect
-    inspect(data)
     if fs.stat_size(HB_DIRECTORY) is None:
         fs.mkdir(HB_DIRECTORY)
         if fs.stat_size(HB_DIRECTORY) is None:
@@ -362,7 +360,7 @@ def uninstall_homebrew(
     fs: RemoteFS,
     backup_directory: Path,
 ) -> UninstallResult:
-    """Restore original SY, then remove /HB only after restoration verifies."""
+    """Restore original /USENG/MM.MBA, then remove /HB after verification."""
     system_path = discover_system_path(fs)
     recovery_path = HB_DIRECTORY + "/" + SYSTEM_BACKUP_NAME
     if fs.stat_size(recovery_path) is None:
@@ -371,8 +369,8 @@ def uninstall_homebrew(
         )
     original = fs.read_file(recovery_path)
     active = fs.read_file(system_path)
-    require_role(original, "SY")
-    require_role(active, "SY")
+    if active != original:
+        require_role(active, "SY")
     local_backup = _atomic_backup(
         backup_directory,
         "uninstall-" + PurePosixPath(system_path).name,

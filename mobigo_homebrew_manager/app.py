@@ -25,6 +25,7 @@ from .service import (
     ManagerError,
     RemoteEntry,
     SYSTEM_BACKUP_NAME,
+    SYSTEM_PATH,
     add_homebrew,
     delete_homebrew,
     discover_system_path,
@@ -39,46 +40,20 @@ from .service import (
 
 RootClass = TkinterDnD.Tk if TkinterDnD is not None else tk.Tk
 
-BRICK_WARNING_TITLE = "WARNING: THIS CAN BRICK YOUR MOBIGO 2"
-BRICK_WARNING_MESSAGE = (
-    "THIS IS EXPERIMENTAL SOFTWARE THAT MODIFIES THE MOBIGO 2 FILESYSTEM.\n\n"
-    "A failed transfer, incorrect file, power loss, USB disconnect, or change "
-    "to the active system menu can leave the console unable to boot. Recovery "
-    "may require opening the console and flashing its storage with external "
-    "hardware.\n\n"
-    "Before continuing:\n"
-    "• Keep an independent, verified backup of the original system menu and firmware.\n"
-    "• Use only the intended MobiGo 2 device and known-good .MBA files.\n"
-    "• Never unplug or power off the console while a transfer is in progress.\n\n"
-    "Choose Cancel unless you understand and accept the risk of permanently "
-    "bricking your MobiGo 2."
+ADVANCED_BRICK_WARNING = (
+    "WARNING: Advanced mode can permanently brick your MobiGo 2. A failed transfer, "
+    "incorrect file, power loss, USB disconnect, or change to the active system menu "
+    "can leave the console unable to boot. Keep an independent, verified backup, use "
+    "only known-good .MBA files, and never unplug or power off during a transfer."
 )
-
-
-def confirm_startup_risk(parent: tk.Misc) -> bool:
-    """Require explicit acknowledgement before any device operation."""
-    return bool(
-        messagebox.askokcancel(
-            BRICK_WARNING_TITLE,
-            BRICK_WARNING_MESSAGE,
-            parent=parent,
-            icon=messagebox.WARNING,
-            default=messagebox.CANCEL,
-        )
-    )
 
 
 class HomebrewManager(RootClass):
     def __init__(self) -> None:
         super().__init__()
-        self.startup_accepted = False
+        self.startup_accepted = True
         self.withdraw()
         self.title("MobiGo 2 Homebrew Manager")
-        if not confirm_startup_risk(self):
-            print("MobiGo Manager: startup cancelled at brick-risk warning", flush=True)
-            self.destroy()
-            return
-        self.startup_accepted = True
         self.geometry("860x610")
         self.minsize(720, 500)
         self.configure(bg="#dff6ff")
@@ -252,6 +227,17 @@ class HomebrewManager(RootClass):
             self.apps.dnd_bind("<<Drop>>", self._drop)
 
     def _advanced_tab(self) -> None:
+        tk.Label(
+            self.advanced_tab,
+            text=ADVANCED_BRICK_WARNING,
+            bg="#dff6ff",
+            fg="#c00000",
+            font=("Arial", 10, "bold"),
+            justify="left",
+            anchor="w",
+            wraplength=800,
+        ).pack(fill="x", pady=(0, 10))
+
         controls = ttk.Frame(self.advanced_tab)
         controls.pack(fill="x", pady=(0, 8))
         self.dmode = tk.BooleanVar(value=False)
@@ -277,8 +263,8 @@ class HomebrewManager(RootClass):
         ttk.Label(
             self.advanced_tab,
             text=(
-                "Advanced changes can make the console unbootable. SY is directly editable; "
-                f"/HB/{SYSTEM_BACKUP_NAME} is deleted only by the full uninstall."
+                f"{SYSTEM_PATH} is directly editable; /HB/{SYSTEM_BACKUP_NAME} is deleted "
+                "only by the full uninstall."
             ),
         ).pack(fill="x", pady=(8, 0))
 
@@ -381,16 +367,30 @@ class HomebrewManager(RootClass):
             if os.environ.get("MOBIGO_MANAGER_EXIT_AFTER_REFRESH") == "1":
                 self.after(0, self.destroy)
                 return
-            if prompt and messagebox.askyesno(
-                "Install Homebrew Launcher?",
-                "HomebrewLauncher.MBA is not installed or has an update.\n\n"
-                "Install it now? The Manager will preserve and verify the original "
-                f"system menu at /HB/{SYSTEM_BACKUP_NAME} before replacing SY.",
-                parent=self,
-            ):
-                self.install()
+            if prompt:
+                install_now = messagebox.askyesno(
+                    "Install Homebrew Launcher?",
+                    "HomebrewLauncher.MBA is not installed or has an update.\n\n"
+                    "Install it now? The Manager will preserve and verify the original "
+                    f"{SYSTEM_PATH} at /HB/{SYSTEM_BACKUP_NAME} before replacing it.\n\n"
+                    "Choose No to continue with the Advanced tab only.",
+                    parent=self,
+                )
+                if install_now:
+                    self.install()
+                else:
+                    self._advanced_only()
 
         self._job("Connecting and reading device…", worker, complete)
+
+    def _advanced_only(self) -> None:
+        """Hide launcher-dependent controls after the user declines installation."""
+        try:
+            self.tabs.forget(self.home_tab)
+        except tk.TclError:
+            pass
+        self.tabs.select(self.advanced_tab)
+        self._status("Ready — Advanced mode only; Homebrew Launcher was not installed")
 
     @staticmethod
     def _size(value: int) -> str:
@@ -412,7 +412,7 @@ class HomebrewManager(RootClass):
                 parent=self,
             )
             self.refresh()
-        self._job("Preserving recovery SY and installing HomebrewLauncher.MBA…", worker, complete)
+        self._job(f"Preserving recovery {SYSTEM_PATH} and installing HomebrewLauncher.MBA…", worker, complete)
 
     def choose_add(self) -> None:
         paths = filedialog.askopenfilenames(
@@ -461,7 +461,7 @@ class HomebrewManager(RootClass):
             messagebox.showinfo(
                 "System menu recovery copy",
                 f"{SYSTEM_BACKUP_NAME} is removed only by 'Delete all homebrew and exit', "
-                "which restores it to SY first.",
+                f"which restores it to {SYSTEM_PATH} first.",
                 parent=self,
             )
             return
@@ -475,7 +475,7 @@ class HomebrewManager(RootClass):
     def delete_all_and_exit(self) -> None:
         if not messagebox.askyesno(
             "Restore system menu and remove homebrew?",
-            f"This will restore /HB/{SYSTEM_BACKUP_NAME} to the active SY slot, "
+            f"This will restore /HB/{SYSTEM_BACKUP_NAME} to {SYSTEM_PATH}, "
             "verify it, delete the entire /HB folder, and close the Manager.\n\n"
             "Continue?",
             parent=self,

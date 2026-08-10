@@ -164,13 +164,13 @@ def install_tests(fs, launcher: bytes, backup_directory: Path) -> dict[str, obje
     remote_backup = fs.read_file(HB_DIRECTORY + "/" + SYSTEM_BACKUP_NAME)
     catalog = decode(fs.read_file(CATALOG_PATH))
     if installed != launcher:
-        raise RuntimeError("installed SY does not match HomebrewLauncher.MBA")
+        raise RuntimeError("installed /USENG/MM.MBA does not match HomebrewLauncher.MBA")
     if remote_backup != original:
-        raise RuntimeError(f"remote {SYSTEM_BACKUP_NAME} does not match original SY")
+        raise RuntimeError(f"remote {SYSTEM_BACKUP_NAME} does not match original /USENG/MM.MBA")
     if not any(entry.label == SYSTEM_BACKUP_NAME for entry in catalog):
         raise RuntimeError(f"INDEX.HB does not contain {SYSTEM_BACKUP_NAME}")
     if result.local_backup.read_bytes() != original:
-        raise RuntimeError("local recovery backup does not match original SY")
+        raise RuntimeError("local recovery backup does not match original /USENG/MM.MBA")
     return {
         "system_path": system_path,
         "original_sha256": sha256(original),
@@ -188,7 +188,7 @@ def verify_installed(fs, launcher: bytes) -> dict[str, object]:
     remote_backup = fs.read_file(backup_path)
     catalog = decode(fs.read_file(CATALOG_PATH))
     if installed != launcher:
-        raise RuntimeError("active SY does not match HomebrewLauncher.MBA")
+        raise RuntimeError("active /USENG/MM.MBA does not match HomebrewLauncher.MBA")
     if remote_backup == launcher:
         raise RuntimeError("recovery copy unexpectedly matches the launcher")
     if not any(entry.label == SYSTEM_BACKUP_NAME for entry in catalog):
@@ -211,7 +211,7 @@ def uninstall_tests(fs, backup_directory: Path) -> dict[str, object]:
     if fs.stat_size(HB_DIRECTORY) is not None:
         raise RuntimeError("/HB still exists after uninstall")
     if result.local_backup.read_bytes() != expected:
-        raise RuntimeError("uninstall local backup does not match restored SY")
+        raise RuntimeError("uninstall local backup does not match restored /USENG/MM.MBA")
     return {
         "system_path": result.system_path,
         "restored_sha256": sha256(restored),
