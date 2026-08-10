@@ -39,11 +39,46 @@ from .service import (
 
 RootClass = TkinterDnD.Tk if TkinterDnD is not None else tk.Tk
 
+BRICK_WARNING_TITLE = "WARNING: THIS CAN BRICK YOUR MOBIGO 2"
+BRICK_WARNING_MESSAGE = (
+    "THIS IS EXPERIMENTAL SOFTWARE THAT MODIFIES THE MOBIGO 2 FILESYSTEM.\n\n"
+    "A failed transfer, incorrect file, power loss, USB disconnect, or change "
+    "to the active system menu can leave the console unable to boot. Recovery "
+    "may require opening the console and flashing its storage with external "
+    "hardware.\n\n"
+    "Before continuing:\n"
+    "• Keep an independent, verified backup of the original system menu and firmware.\n"
+    "• Use only the intended MobiGo 2 device and known-good .MBA files.\n"
+    "• Never unplug or power off the console while a transfer is in progress.\n\n"
+    "Choose Cancel unless you understand and accept the risk of permanently "
+    "bricking your MobiGo 2."
+)
+
+
+def confirm_startup_risk(parent: tk.Misc) -> bool:
+    """Require explicit acknowledgement before any device operation."""
+    return bool(
+        messagebox.askokcancel(
+            BRICK_WARNING_TITLE,
+            BRICK_WARNING_MESSAGE,
+            parent=parent,
+            icon=messagebox.WARNING,
+            default=messagebox.CANCEL,
+        )
+    )
+
 
 class HomebrewManager(RootClass):
     def __init__(self) -> None:
         super().__init__()
+        self.startup_accepted = False
+        self.withdraw()
         self.title("MobiGo 2 Homebrew Manager")
+        if not confirm_startup_risk(self):
+            print("MobiGo Manager: startup cancelled at brick-risk warning", flush=True)
+            self.destroy()
+            return
+        self.startup_accepted = True
         self.geometry("860x610")
         self.minsize(720, 500)
         self.configure(bg="#dff6ff")
@@ -55,6 +90,7 @@ class HomebrewManager(RootClass):
         self._body()
         self._loading_screen()
         self._status("Plug in your MobiGo 2 in USB mode, then choose Refresh.")
+        self.deiconify()
         self.after(250, self.refresh)
 
     def _style(self) -> None:
@@ -553,4 +589,6 @@ class HomebrewManager(RootClass):
 
 
 def run() -> None:
-    HomebrewManager().mainloop()
+    manager = HomebrewManager()
+    if manager.startup_accepted:
+        manager.mainloop()

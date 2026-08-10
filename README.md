@@ -15,6 +15,11 @@ The Manager is distributed as Python source, not as a platform-specific `.app`
 or `.exe`. Run it from a terminal with raw-device privileges so errors remain
 visible and macOS grants disk access to the same terminal process.
 
+Every launch begins with a blocking brick-risk warning before device discovery
+or filesystem access. **Cancel is the default.** Continuing explicitly
+acknowledges that an interrupted transfer or incorrect system-menu change can
+leave the console unbootable and may require external hardware recovery.
+
 ## Run the GUI
 
 Python 3.10+ and Tk are required. Drag-and-drop uses the optional
